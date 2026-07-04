@@ -193,7 +193,7 @@ with st.sidebar:
     st.markdown("### 👥 Lead Type")
     lead_type = st.selectbox("Lead Type", ["People", "Company"], label_visibility="collapsed", disabled=st.session_state.is_loading)
     st.markdown("### 📊 Maximum Results")
-    max_results = st.slider("Maximum Results", 10, 25, 25, 5, label_visibility="collapsed", disabled=st.session_state.is_loading)
+    max_results = st.slider("Maximum Results", 10, 100, 25, 10, label_visibility="collapsed", disabled=st.session_state.is_loading)
 
     dis = st.session_state.is_loading
     with st.expander("⚙️ Filters (optional)", expanded=False):

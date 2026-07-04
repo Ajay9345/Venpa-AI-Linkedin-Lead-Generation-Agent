@@ -24,32 +24,49 @@ def _unique_values(df: pd.DataFrame) -> tuple[list[str], list[str]]:
 
 
 def apply_groq_filter(df: pd.DataFrame, search_query: str, location_filter: str) -> pd.DataFrame:
-    """Send only unique locations + industries to Groq, then filter df locally."""
+    """Apply deterministic location filter, then use Groq only for industry filtering."""
     if df.empty:
-        return df
-
-    client = _groq_client()
-    if client is None:
         return df
 
     is_company = "Company Name" in df.columns
     industry_col = "Industry" if is_company else "Company"
 
-    locations, industries = _unique_values(df)
-    location_hint = f" Location filter: {location_filter.strip()}." if location_filter and location_filter.strip() else ""
+    # --- Fuzzy location filter ---
+    if location_filter and location_filter.strip():
+        from difflib import SequenceMatcher
+        city_input = location_filter.strip().lower()
+
+        def _location_matches(loc: str) -> bool:
+            parts = [p.strip() for p in re.split(r"[,|]", loc.lower())]
+            for part in parts:
+                if city_input in part or part in city_input:
+                    return True
+                if SequenceMatcher(None, city_input, part).ratio() >= 0.8:
+                    return True
+            return False
+
+        matched = {loc for loc in df["Location"].dropna().unique() if _location_matches(loc)}
+        df = df[df["Location"].isin(matched)].reset_index(drop=True)
+        if df.empty:
+            return df
+
+    # --- Groq for industry filtering only ---
+    client = _groq_client()
+    if client is None:
+        return df
+
+    _, industries = _unique_values(df)
 
     prompt = f"""You are a lead filtering assistant.
-User search query: "{search_query}"{location_hint}
 
-From the lists below, return ONLY the values that are relevant:
-1. Keep locations that match or are within the requested location (city/region/country). If no location filter, keep all.
-2. Keep industries/companies that are relevant to the search query. Remove clearly unrelated ones.
+User search query: "{search_query}"
 
-Locations: {json.dumps(locations, ensure_ascii=False)}
-Industries: {json.dumps(industries, ensure_ascii=False)}
+From the list below, return ONLY the industries relevant to the search query. Remove unrelated ones.
 
-Respond ONLY with a raw JSON object, no explanation, no markdown:
-{{"locations": [...], "industries": [...]}}
+Industries:
+{json.dumps(industries, ensure_ascii=False)}
+
+Respond ONLY with valid JSON: {{"industries": [...]}}
 """
 
     try:
@@ -57,23 +74,16 @@ Respond ONLY with a raw JSON object, no explanation, no markdown:
             model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
-            max_tokens=512,
+            max_tokens=256,
         )
         content = response.choices[0].message.content.strip()
         match = re.search(r"\{.*\}", content, re.DOTALL)
         if not match:
             return df
         result = json.loads(match.group())
-        approved_locations = set(result.get("locations") or [])
-        approved_industries = set(result.get("industries") or [])
-
-        mask = pd.Series([True] * len(df), index=df.index)
-        if approved_locations:
-            mask &= df["Location"].isin(approved_locations)
+        approved_industries = {v.lower() for v in (result.get("industries") or [])}
         if approved_industries:
-            mask &= df[industry_col].isin(approved_industries)
-
-        filtered = df[mask].reset_index(drop=True)
-        return filtered if not filtered.empty else df
+            df = df[df[industry_col].str.lower().isin(approved_industries)].reset_index(drop=True)
+        return df
     except Exception:
         return df
