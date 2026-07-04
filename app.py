@@ -187,7 +187,7 @@ with st.sidebar:
 
     st.markdown("### 🔍 Search Query")
     search_query = st.text_area(
-        "Search Query", placeholder="Example:\nReal Estate in Coimbatore",
+        "Search Query", placeholder="Example:\nReal Estate",
         label_visibility="collapsed", height=80, disabled=st.session_state.is_loading,
     )
     st.markdown("### 📍 Location")
