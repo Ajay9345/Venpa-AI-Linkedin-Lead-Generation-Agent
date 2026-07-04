@@ -190,6 +190,8 @@ with st.sidebar:
         "Search Query", placeholder="Example:\nReal Estate in Coimbatore",
         label_visibility="collapsed", height=80, disabled=st.session_state.is_loading,
     )
+    st.markdown("### 📍 Location")
+    f_location = st.text_input("Location", placeholder="e.g. Chennai", label_visibility="collapsed", disabled=st.session_state.is_loading)
     st.markdown("### 👥 Lead Type")
     lead_type = st.selectbox("Lead Type", ["People", "Company"], label_visibility="collapsed", disabled=st.session_state.is_loading)
     st.markdown("### 📊 Maximum Results")
@@ -197,7 +199,6 @@ with st.sidebar:
 
     dis = st.session_state.is_loading
     with st.expander("⚙️ Filters (optional)", expanded=False):
-        f_location  = st.text_input("Location", placeholder="e.g. Chennai", disabled=dis)
         f_industry  = st.text_input("Industry", placeholder="e.g. Information Technology", disabled=dis)
         f_keyword   = st.text_input("Keyword", disabled=dis)
         f_headcount = st.selectbox("Company Headcount", ["","1-10","11-50","51-200","201-500","501-1000","1001-5000","5001-10000","10001+"], disabled=dis)
