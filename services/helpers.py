@@ -118,7 +118,7 @@ def normalize_record(raw: dict) -> dict:
     headline = pick("headline", "title", "occupation")
     designation = pos.get("title") or pick("jobTitle", "designation")
     company = pos.get("companyName") or pick("companyName", "company")
-    company_url = pos.get("companyUrl") or pick("companyUrl", "companyWebsite")
+    company_url = pos.get("companyLinkedinUrl") or pick("companyLinkedinUrl", "companyUrl", "companyWebsite")
     company_size = pos.get("companyStaffCountRange") or pick("companySize", "employeeCount")
 
     loc = raw.get("location") or {}
