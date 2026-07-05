@@ -74,16 +74,18 @@ Respond ONLY with valid JSON: {{"industries": [...]}}
             model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
-            max_tokens=256,
+            max_tokens=1024,
         )
         content = response.choices[0].message.content.strip()
         match = re.search(r"\{.*\}", content, re.DOTALL)
         if not match:
-            return df
+            return pd.DataFrame(columns=df.columns)
         result = json.loads(match.group())
         approved_industries = {v.lower() for v in (result.get("industries") or [])}
         if approved_industries:
             df = df[df[industry_col].str.lower().isin(approved_industries)].reset_index(drop=True)
         return df
+    except json.JSONDecodeError:
+        return pd.DataFrame(columns=df.columns)
     except Exception:
         return df
