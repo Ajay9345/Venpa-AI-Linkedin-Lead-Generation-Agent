@@ -11,6 +11,8 @@ from services import analytics, apify_service, exporter
 from services.helpers import EXPECTED_COLUMNS, COMPANY_COLUMNS, clean_dataframe, normalize_record, normalize_company_record
 from services.lead_score import apply_lead_scores, score_badge_color
 from services.groq_filter import apply_groq_filter
+from services.google_apify_service import GoogleApifyService
+from services.google_formatter import format_google_results
 
 load_dotenv()
 
@@ -28,6 +30,7 @@ for k, v in {
     "last_query": "",
     "error_message": None,
     "search_count": 0,
+    "active_view": "🔷 LinkedIn Leads",
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
@@ -182,64 +185,98 @@ with header_right:
             st.session_state.dark_mode = not st.session_state.dark_mode
             st.rerun()
 
+generate_clicked = clear_clicked = False
+g_generate = g_clear = False
+search_query, f_location, lead_type, max_results = "", "", "People", 25
+f_industry = f_keyword = f_headcount = ""
+f_current_title = f_past_title = f_current_co = f_past_co = ""
+f_school = f_first_name = f_last_name = f_company_hq = ""
+f_years_exp = f_years_co = f_seniority = f_function = f_language = ""
+g_query, g_location, g_max = "", "", 20
+
 with st.sidebar:
     st.markdown('<div class="brand-mark"><div class="hex"></div><span>Venpa AI</span></div>', unsafe_allow_html=True)
 
-    st.markdown("### 🔍 Search Query")
-    search_query = st.text_area(
-        "Search Query", placeholder="Example:\nReal Estate",
-        label_visibility="collapsed", height=80, disabled=st.session_state.is_loading,
-    )
-    st.markdown("### 📍 Location")
-    f_location = st.text_input("Location", placeholder="e.g. Chennai", label_visibility="collapsed", disabled=st.session_state.is_loading)
-    st.markdown("### 👥 Lead Type")
-    lead_type = st.selectbox("Lead Type", ["People", "Company"], label_visibility="collapsed", disabled=st.session_state.is_loading)
-    st.markdown("### 📊 Maximum Results")
-    max_results = st.slider("Maximum Results", 10, 100, 25, 10, label_visibility="collapsed", disabled=st.session_state.is_loading)
+    if st.session_state.active_view == "🔷 LinkedIn Leads":
+        st.markdown("### 🔍 Search Query")
+        search_query = st.text_area(
+            "Search Query", placeholder="Example:\nReal Estate",
+            label_visibility="collapsed", height=80, disabled=st.session_state.is_loading,
+        )
+        st.markdown("### 📍 Location")
+        f_location = st.text_input("Location", placeholder="e.g. Chennai", label_visibility="collapsed", disabled=st.session_state.is_loading)
+        st.markdown("### 👥 Lead Type")
+        lead_type = st.selectbox("Lead Type", ["People", "Company"], label_visibility="collapsed", disabled=st.session_state.is_loading)
+        st.markdown("### 📊 Maximum Results")
+        max_results = st.slider("Maximum Results", 10, 100, 25, 10, label_visibility="collapsed", disabled=st.session_state.is_loading)
 
-    dis = st.session_state.is_loading
-    with st.expander("⚙️ Filters (optional)", expanded=False):
-        f_industry  = st.text_input("Industry", placeholder="e.g. Information Technology", disabled=dis)
-        f_keyword   = st.text_input("Keyword", disabled=dis)
-        f_headcount = st.selectbox("Company Headcount", ["","1-10","11-50","51-200","201-500","501-1000","1001-5000","5001-10000","10001+"], disabled=dis)
-        if lead_type == "People":
-            f_current_title = st.text_input("Current Job Title", placeholder="e.g. Software Engineer", disabled=dis)
-            f_past_title    = st.text_input("Past Job Title", disabled=dis)
-            f_current_co    = st.text_input("Current Company", disabled=dis)
-            f_past_co       = st.text_input("Past Company", disabled=dis)
-            f_school        = st.text_input("School", disabled=dis)
-            f_first_name    = st.text_input("First Name", disabled=dis)
-            f_last_name     = st.text_input("Last Name", disabled=dis)
-            f_company_hq    = st.text_input("Company HQ Location", disabled=dis)
-            f_years_exp     = st.selectbox("Years of Experience", ["", "1","2","3","4","5","6","7","8","9","10"], disabled=dis)
-            f_years_co      = st.selectbox("Years at Current Company", ["", "1","2","3","4","5"], disabled=dis)
-            f_seniority     = st.selectbox("Seniority Level", ["","Internship","Entry level","Associate","Mid-Senior level","Director","Executive"], disabled=dis)
-            f_function      = st.text_input("Function", disabled=dis)
-            f_language      = st.text_input("Profile Language", placeholder="e.g. en", disabled=dis)
-        else:
-            f_current_title = f_past_title = f_current_co = f_past_co = ""
-            f_school = f_first_name = f_last_name = f_company_hq = ""
-            f_years_exp = f_years_co = f_seniority = f_function = f_language = ""
-
-    st.markdown("---")
-    generate_clicked = st.button("🚀 Generate Leads", type="primary", use_container_width=True, disabled=dis)
-    clear_clicked    = st.button("🗑️ Clear Results", use_container_width=True, disabled=dis)
-
-    st.markdown("### 📤 Export")
-    export_disabled = st.session_state.leads_df.empty or dis
-    exp_col1, exp_col2, exp_col3 = st.columns(3)
-
-    def _export_btn(col, label, data_fn, filename, mime):
-        with col:
-            if not export_disabled:
-                st.download_button(label, data=data_fn(st.session_state.leads_df),
-                                   file_name=filename, mime=mime, use_container_width=True)
+        dis = st.session_state.is_loading
+        with st.expander("⚙️ Filters (optional)", expanded=False):
+            f_industry  = st.text_input("Industry", placeholder="e.g. Information Technology", disabled=dis)
+            f_keyword   = st.text_input("Keyword", disabled=dis)
+            f_headcount = st.selectbox("Company Headcount", ["","1-10","11-50","51-200","201-500","501-1000","1001-5000","5001-10000","10001+"], disabled=dis)
+            if lead_type == "People":
+                f_current_title = st.text_input("Current Job Title", placeholder="e.g. Software Engineer", disabled=dis)
+                f_past_title    = st.text_input("Past Job Title", disabled=dis)
+                f_current_co    = st.text_input("Current Company", disabled=dis)
+                f_past_co       = st.text_input("Past Company", disabled=dis)
+                f_school        = st.text_input("School", disabled=dis)
+                f_first_name    = st.text_input("First Name", disabled=dis)
+                f_last_name     = st.text_input("Last Name", disabled=dis)
+                f_company_hq    = st.text_input("Company HQ Location", disabled=dis)
+                f_years_exp     = st.selectbox("Years of Experience", ["", "1","2","3","4","5","6","7","8","9","10"], disabled=dis)
+                f_years_co      = st.selectbox("Years at Current Company", ["", "1","2","3","4","5"], disabled=dis)
+                f_seniority     = st.selectbox("Seniority Level", ["","Internship","Entry level","Associate","Mid-Senior level","Director","Executive"], disabled=dis)
+                f_function      = st.text_input("Function", disabled=dis)
+                f_language      = st.text_input("Profile Language", placeholder="e.g. en", disabled=dis)
             else:
-                st.button(label, disabled=True, use_container_width=True)
+                f_current_title = f_past_title = f_current_co = f_past_co = ""
+                f_school = f_first_name = f_last_name = f_company_hq = ""
+                f_years_exp = f_years_co = f_seniority = f_function = f_language = ""
 
-    _export_btn(exp_col1, "CSV",   exporter.to_csv_bytes,   "linkedin_leads.csv",  "text/csv")
-    _export_btn(exp_col2, "Excel", exporter.to_excel_bytes, "linkedin_leads.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    _export_btn(exp_col3, "JSON",  exporter.to_json_bytes,  "linkedin_leads.json", "application/json")
+        st.markdown("---")
+        generate_clicked = st.button("🚀 Generate Leads", type="primary", use_container_width=True, disabled=dis)
+        clear_clicked    = st.button("🗑️ Clear Results", use_container_width=True, disabled=dis)
+
+        st.markdown("### 📤 Export")
+        export_disabled = st.session_state.leads_df.empty or dis
+        exp_col1, exp_col2, exp_col3 = st.columns(3)
+
+        def _export_btn(col, label, data_fn, filename, mime):
+            with col:
+                if not export_disabled:
+                    st.download_button(label, data=data_fn(st.session_state.leads_df),
+                                       file_name=filename, mime=mime, use_container_width=True)
+                else:
+                    st.button(label, disabled=True, use_container_width=True)
+
+        _export_btn(exp_col1, "CSV",   exporter.to_csv_bytes,   "linkedin_leads.csv",  "text/csv")
+        _export_btn(exp_col2, "Excel", exporter.to_excel_bytes, "linkedin_leads.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        _export_btn(exp_col3, "JSON",  exporter.to_json_bytes,  "linkedin_leads.json", "application/json")
+
+    else:
+        dis = st.session_state.is_loading
+        st.markdown("### 🔍 Search Query")
+        g_query = st.text_input("Search Query", placeholder="Software Companies", key="g_query", label_visibility="collapsed", disabled=dis)
+        st.markdown("### 📍 Location")
+        g_location = st.text_input("Location", placeholder="Chennai", key="g_location", label_visibility="collapsed", disabled=dis)
+        st.markdown("### 📊 Maximum Results")
+        g_max = st.slider("Maximum Results", 1, 500, 20, 10, key="g_max", label_visibility="collapsed", disabled=dis)
+        st.markdown("---")
+        g_generate = st.button("🚀 Generate Leads", type="primary", use_container_width=True, key="g_generate", disabled=dis)
+        g_clear = st.button("🗑️ Clear Results", use_container_width=True, key="g_clear", disabled=dis)
+
+        st.markdown("### 📤 Export")
+        g_export_disabled = "google_df" not in st.session_state or st.session_state["google_df"].empty
+        ge1, ge2 = st.columns(2)
+        if not g_export_disabled:
+            ge1.download_button("CSV", st.session_state["google_df"].to_csv(index=False).encode("utf-8-sig"),
+                                "google_leads.csv", "text/csv", use_container_width=True)
+            ge2.download_button("Excel", exporter.to_excel_bytes(st.session_state["google_df"]),
+                                "google_leads.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        else:
+            ge1.button("CSV", disabled=True, use_container_width=True)
+            ge2.button("Excel", disabled=True, use_container_width=True)
 
     st.markdown('<div class="footer-mark">Powered by <b>Venpa AI</b></div>', unsafe_allow_html=True)
 
@@ -336,131 +373,178 @@ if st.session_state.error_message:
     title, detail = st.session_state.error_message
     st.error(f"**{title}** — {detail}")
 
-df = st.session_state.leads_df
+st.radio(
+    "View", ["🔷 LinkedIn Leads", "📍 Google Leads"],
+    horizontal=True, label_visibility="collapsed", key="active_view",
+)
 
-if df.empty:
-    st.markdown("""
-        <div class="welcome-box">
-            <div class="hex-lg"></div>
-            <h2>Welcome to Venpa AI Copilot</h2>
-            <p>Enter a search query and click "Generate Leads" to let Venpa AI discover and score high-quality LinkedIn leads for you.</p>
-        </div>
-    """, unsafe_allow_html=True)
-else:
-    metrics = analytics.compute_metrics(df)
-    metric_defs = [
-        ("Total Leads", metrics["total_leads"]),
-        ("Companies Found", metrics["companies_found"]),
-        ("Cities", metrics["cities"]),
-        ("Decision Makers", metrics["decision_makers"]),
-        ("Average Score", metrics["avg_score"]),
-        ("Highest Score", metrics["highest_score"]),
-        ("Lowest Score", metrics["lowest_score"]),
-    ]
-    metric_cols = st.columns(4)
-    for i, (label, value) in enumerate(metric_defs):
-        with metric_cols[i % 4]:
-            st.markdown(f"""
-                <div class="metric-card">
-                    <div class="label">{label}</div>
-                    <div class="value">{value}</div>
-                </div>
-            """, unsafe_allow_html=True)
-        if i % 4 == 3 and i != len(metric_defs) - 1:
-            metric_cols = st.columns(4)
+if st.session_state.active_view == "📍 Google Leads":
+    if g_clear:
+        st.session_state.pop("google_df", None)
+        st.rerun()
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown("## 📋 Results")
-
-    filt_col1, filt_col2, filt_col3 = st.columns(3)
-    with filt_col1:
-        min_score = st.slider("Min Lead Score", 0, 100, 0)
-
-    is_company_view = "Company Name" in df.columns
-
-    with filt_col2:
-        if is_company_view:
-            industry_options = ["All"] + sorted(df["Industry"].replace("N/A", pd.NA).dropna().unique().tolist())
-            company_filter = st.selectbox("Industry", industry_options)
+    if g_generate:
+        if not g_query or not g_location:
+            st.warning("Please enter both Query and Location.")
         else:
-            company_options = ["All"] + sorted(df["Company"].replace("N/A", pd.NA).dropna().unique().tolist())
-            company_filter = st.selectbox("Company", company_options)
-    with filt_col3:
-        if is_company_view:
-            size_options = ["All"] + sorted(df["Company Size"].replace("N/A", pd.NA).dropna().unique().tolist())
-            designation_filter = st.selectbox("Company Size", size_options)
-        else:
-            desig_options = ["All"] + sorted(df["Designation"].replace("N/A", pd.NA).dropna().unique().tolist())
-            designation_filter = st.selectbox("Designation", desig_options)
+            try:
+                with st.spinner("Searching Google Maps..."):
+                    google_service = GoogleApifyService()
+                    results = google_service.run(g_query, g_location, g_max)
+                    st.session_state["google_df"] = format_google_results(results)
+            except Exception as e:
+                st.error(str(e))
 
-    search_box = st.text_input("🔎 Search within results", placeholder="Search by name, company, headline...")
-
-    filtered_df = df[df["Lead Score"] >= min_score]
-    if company_filter != "All":
-        col3_field = "Industry" if is_company_view else "Company"
-        filtered_df = filtered_df[filtered_df[col3_field] == company_filter]
-    if designation_filter != "All":
-        col4_field = "Company Size" if is_company_view else "Designation"
-        filtered_df = filtered_df[filtered_df[col4_field] == designation_filter]
-    if search_box:
-        needle = search_box.lower()
-        if is_company_view:
-            mask = (
-                filtered_df["Company Name"].str.lower().str.contains(needle, na=False)
-                | filtered_df["Industry"].str.lower().str.contains(needle, na=False)
-                | filtered_df["Description"].str.lower().str.contains(needle, na=False)
-            )
-        else:
-            mask = (
-                filtered_df["Full Name"].str.lower().str.contains(needle, na=False)
-                | filtered_df["Company"].str.lower().str.contains(needle, na=False)
-                | filtered_df["Headline"].str.lower().str.contains(needle, na=False)
-            )
-        filtered_df = filtered_df[mask]
-
-    display_df = filtered_df.copy()
-    display_df["Lead Score"] = display_df["Lead Score"].apply(lambda s: f"{s} ({score_badge_color(s).upper()})")
-
-    if is_company_view:
-        table_cols = ["Company Name", "Industry", "Location", "Company Size", "Followers", "Lead Score", "LinkedIn URL", "Website"]
-        col_config = {
-            "LinkedIn URL": st.column_config.LinkColumn("LinkedIn URL"),
-            "Website": st.column_config.LinkColumn("Website"),
-        }
+    if "google_df" in st.session_state and not st.session_state["google_df"].empty:
+        g_df = st.session_state["google_df"]
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total Leads", len(g_df))
+        m2.metric("Emails", g_df["Email"].replace("", pd.NA).count())
+        m3.metric("Phones", g_df["Phone"].replace("", pd.NA).count())
+        m4.metric("Websites", g_df["Website"].replace("", pd.NA).count())
+        st.markdown("<br>", unsafe_allow_html=True)
+        g_search = st.text_input("🔎 Search within results", key="g_search")
+        display_g = g_df[
+            g_df.astype(str).apply(lambda c: c.str.contains(g_search, case=False, na=False)).any(axis=1)
+        ] if g_search else g_df
+        st.dataframe(display_g, use_container_width=True, height=500, hide_index=True)
+        st.caption(f"Showing {len(display_g)} of {len(g_df)} leads")
     else:
-        table_cols = ["Full Name", "Headline", "Designation", "Company", "Location", "Lead Score", "LinkedIn URL", "Company URL"]
-        col_config = {
-            "LinkedIn URL": st.column_config.LinkColumn("LinkedIn URL"),
-            "Company URL": st.column_config.LinkColumn("Company URL"),
-        }
+        st.markdown("""
+            <div class="welcome-box">
+                <div class="hex-lg"></div>
+                <h2>Google Maps Lead Generator</h2>
+                <p>Enter a search query and location, then click "Generate Leads" to find business leads from Google Maps.</p>
+            </div>
+        """, unsafe_allow_html=True)
 
-    st.dataframe(
-        display_df[[c for c in table_cols if c in display_df.columns]],
-        use_container_width=True, hide_index=True,
-        column_config=col_config,
-        height=420,
-    )
-    st.caption(f"Showing {len(filtered_df)} of {len(df)} leads")
-    st.markdown("<br>", unsafe_allow_html=True)
+else:
 
-    st.markdown("## 📈 Analytics")
+    df = st.session_state.leads_df
 
-    chart_row1_col1, chart_row1_col2 = st.columns(2)
-    with chart_row1_col1:
-        st.pyplot(analytics.chart_leads_by_city(df))
-    with chart_row1_col2:
+    if df.empty:
+        st.markdown("""
+            <div class="welcome-box">
+                <div class="hex-lg"></div>
+                <h2>Welcome to Venpa AI Copilot</h2>
+                <p>Enter a search query and click "Generate Leads" to let Venpa AI discover and score high-quality LinkedIn leads for you.</p>
+            </div>
+        """, unsafe_allow_html=True)
+    else:
+        metrics = analytics.compute_metrics(df)
+        metric_defs = [
+            ("Total Leads", metrics["total_leads"]),
+            ("Companies Found", metrics["companies_found"]),
+            ("Cities", metrics["cities"]),
+            ("Decision Makers", metrics["decision_makers"]),
+            ("Average Score", metrics["avg_score"]),
+            ("Highest Score", metrics["highest_score"]),
+            ("Lowest Score", metrics["lowest_score"]),
+        ]
+        metric_cols = st.columns(4)
+        for i, (label, value) in enumerate(metric_defs):
+            with metric_cols[i % 4]:
+                st.markdown(f"""
+                    <div class="metric-card">
+                        <div class="label">{label}</div>
+                        <div class="value">{value}</div>
+                    </div>
+                """, unsafe_allow_html=True)
+            if i % 4 == 3 and i != len(metric_defs) - 1:
+                metric_cols = st.columns(4)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("## 📋 Results")
+
+        filt_col1, filt_col2, filt_col3 = st.columns(3)
+        with filt_col1:
+            min_score = st.slider("Min Lead Score", 0, 100, 0)
+
+        is_company_view = "Company Name" in df.columns
+
+        with filt_col2:
+            if is_company_view:
+                industry_options = ["All"] + sorted(df["Industry"].replace("N/A", pd.NA).dropna().unique().tolist())
+                company_filter = st.selectbox("Industry", industry_options)
+            else:
+                company_options = ["All"] + sorted(df["Company"].replace("N/A", pd.NA).dropna().unique().tolist())
+                company_filter = st.selectbox("Company", company_options)
+        with filt_col3:
+            if is_company_view:
+                size_options = ["All"] + sorted(df["Company Size"].replace("N/A", pd.NA).dropna().unique().tolist())
+                designation_filter = st.selectbox("Company Size", size_options)
+            else:
+                desig_options = ["All"] + sorted(df["Designation"].replace("N/A", pd.NA).dropna().unique().tolist())
+                designation_filter = st.selectbox("Designation", desig_options)
+
+        search_box = st.text_input("🔎 Search within results", placeholder="Search by name, company, headline...")
+
+        filtered_df = df[df["Lead Score"] >= min_score]
+        if company_filter != "All":
+            col3_field = "Industry" if is_company_view else "Company"
+            filtered_df = filtered_df[filtered_df[col3_field] == company_filter]
+        if designation_filter != "All":
+            col4_field = "Company Size" if is_company_view else "Designation"
+            filtered_df = filtered_df[filtered_df[col4_field] == designation_filter]
+        if search_box:
+            needle = search_box.lower()
+            if is_company_view:
+                mask = (
+                    filtered_df["Company Name"].str.lower().str.contains(needle, na=False)
+                    | filtered_df["Industry"].str.lower().str.contains(needle, na=False)
+                    | filtered_df["Description"].str.lower().str.contains(needle, na=False)
+                )
+            else:
+                mask = (
+                    filtered_df["Full Name"].str.lower().str.contains(needle, na=False)
+                    | filtered_df["Company"].str.lower().str.contains(needle, na=False)
+                    | filtered_df["Headline"].str.lower().str.contains(needle, na=False)
+                )
+            filtered_df = filtered_df[mask]
+
+        display_df = filtered_df.copy()
+        display_df["Lead Score"] = display_df["Lead Score"].apply(lambda s: f"{s} ({score_badge_color(s).upper()})")
+
         if is_company_view:
-            st.pyplot(analytics.chart_designation_distribution(df.rename(columns={"Industry": "Designation"})))
+            table_cols = ["Company Name", "Industry", "Location", "Company Size", "Followers", "Lead Score", "LinkedIn URL", "Website"]
+            col_config = {
+                "LinkedIn URL": st.column_config.LinkColumn("LinkedIn URL"),
+                "Website": st.column_config.LinkColumn("Website"),
+            }
         else:
-            st.pyplot(analytics.chart_top_companies(df))
+            table_cols = ["Full Name", "Headline", "Designation", "Company", "Location", "Lead Score", "LinkedIn URL", "Company URL"]
+            col_config = {
+                "LinkedIn URL": st.column_config.LinkColumn("LinkedIn URL"),
+                "Company URL": st.column_config.LinkColumn("Company URL"),
+            }
 
-    chart_row2_col1, _ = st.columns(2)
-    with chart_row2_col1:
-        if not is_company_view:
-            st.pyplot(analytics.chart_designation_distribution(df))
+        st.dataframe(
+            display_df[[c for c in table_cols if c in display_df.columns]],
+            use_container_width=True, hide_index=True,
+            column_config=col_config,
+            height=420,
+        )
+        st.caption(f"Showing {len(filtered_df)} of {len(df)} leads")
+        st.markdown("<br>", unsafe_allow_html=True)
 
-    chart_row3_col1, chart_row3_col2 = st.columns(2)
-    with chart_row3_col1:
-        st.pyplot(analytics.chart_lead_score_distribution(df))
-    with chart_row3_col2:
-        st.pyplot(analytics.chart_top_scoring_leads(df))
+        st.markdown("## 📈 Analytics")
+
+        chart_row1_col1, chart_row1_col2 = st.columns(2)
+        with chart_row1_col1:
+            st.pyplot(analytics.chart_leads_by_city(df))
+        with chart_row1_col2:
+            if is_company_view:
+                st.pyplot(analytics.chart_designation_distribution(df.rename(columns={"Industry": "Designation"})))
+            else:
+                st.pyplot(analytics.chart_top_companies(df))
+
+        chart_row2_col1, _ = st.columns(2)
+        with chart_row2_col1:
+            if not is_company_view:
+                st.pyplot(analytics.chart_designation_distribution(df))
+
+        chart_row3_col1, chart_row3_col2 = st.columns(2)
+        with chart_row3_col1:
+            st.pyplot(analytics.chart_lead_score_distribution(df))
+        with chart_row3_col2:
+            st.pyplot(analytics.chart_top_scoring_leads(df))
