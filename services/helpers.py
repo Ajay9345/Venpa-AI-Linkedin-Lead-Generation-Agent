@@ -162,8 +162,8 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         return df
     df = df.copy()
     df = df[df["Full Name"].notna() & (df["Full Name"] != "N/A")]
-    df = df.drop_duplicates(subset=["LinkedIn URL"], keep="first")
-    df = df.drop_duplicates(subset=["Full Name"], keep="first")
+    has_url = df["LinkedIn URL"].notna() & (df["LinkedIn URL"] != "N/A")
+    df = pd.concat([df[has_url].drop_duplicates(subset=["LinkedIn URL"], keep="first"), df[~has_url]])
     display_cols = [c for c in EXPECTED_COLUMNS if c in df.columns and c != "Lead Score"]
     df = df.dropna(how="all", subset=display_cols)
     df["Full Name"] = df["Full Name"].astype(str).str.strip()

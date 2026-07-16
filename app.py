@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from services import analytics, apify_service, exporter
 from services.helpers import EXPECTED_COLUMNS, COMPANY_COLUMNS, clean_dataframe, normalize_record, normalize_company_record
 from services.lead_score import apply_lead_scores, score_badge_color
-from services.groq_filter import apply_groq_filter
+from services.relevance import PRIMARY_RELEVANCE_COL, RELEVANCE_COL, apply_location_filter, filter_relevant, score_relevance
 from services.google_apify_service import GoogleApifyService
 from services.google_formatter import format_google_results
 
@@ -29,6 +29,7 @@ for k, v in {
     "dark_mode": True,
     "last_query": "",
     "error_message": None,
+    "shortfall_message": None,
     "search_count": 0,
     "active_view": "🔷 LinkedIn Leads",
 }.items():
@@ -283,6 +284,7 @@ with st.sidebar:
 if clear_clicked:
     st.session_state.leads_df = pd.DataFrame(columns=EXPECTED_COLUMNS)
     st.session_state.error_message = None
+    st.session_state.shortfall_message = None
     st.rerun()
 
 _ERROR_MAP = {
@@ -297,45 +299,88 @@ _ERROR_MAP = {
 }
 
 
+MAX_FETCH_ATTEMPTS = 3
+
+
+def _normalize_batch(raw_items: list[dict], normalizer, cols: list[str], query: str, is_company: bool) -> pd.DataFrame:
+    df = pd.DataFrame([normalizer(i) for i in raw_items])
+    for col in cols:
+        if col not in df.columns and col != "Lead Score":
+            df[col] = "N/A"
+    if df.empty:
+        return df
+    df["Search Query"] = query
+    if is_company:
+        df = df[df["Company Name"].notna() & (df["Company Name"] != "N/A")].reset_index(drop=True)
+    else:
+        df = clean_dataframe(df)
+    return df
+
+
+def _merge_unique(existing: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
+    if existing.empty:
+        return new
+    if new.empty:
+        return existing
+    combined = pd.concat([existing, new], ignore_index=True)
+    has_url = combined["LinkedIn URL"].notna() & (combined["LinkedIn URL"] != "N/A")
+    return pd.concat([
+        combined[has_url].drop_duplicates(subset=["LinkedIn URL"], keep="first"),
+        combined[~has_url],
+    ]).reset_index(drop=True)
+
+
 def run_generation_workflow(query: str, lead_type_: str, max_results_: int, filters: dict, location_filter: str = "") -> Optional[pd.DataFrame]:
     bar = st.progress(0, text="Initializing Actor...")
-    steps = [
-        (10, "Initializing Actor..."),
-        (25, "Searching LinkedIn..."),
-        (45, "Collecting Results..."),
-        (65, "Downloading Dataset..."),
-        (80, "Cleaning Data..."),
-        (90, "Calculating Lead Scores..."),
-        (97, "Preparing Dashboard..."),
-    ]
     is_company = lead_type_ == "Company"
     cols = COMPANY_COLUMNS if is_company else EXPECTED_COLUMNS
     normalizer = normalize_company_record if is_company else normalize_record
+    q = query.strip()
+    st.session_state.shortfall_message = None
     try:
-        bar.progress(*steps[0])
-        bar.progress(*steps[1]); time.sleep(0.2)
-        bar.progress(*steps[2])
-        raw_items = apify_service.run_linkedin_search(query=query.strip(), max_results=max_results_, lead_type=lead_type_, filters=filters)
-        bar.progress(*steps[3])
-        df = pd.DataFrame([normalizer(i) for i in raw_items])
-        for col in cols:
-            if col not in df.columns and col != "Lead Score":
-                df[col] = "N/A"
-        df["Search Query"] = query.strip()
-        bar.progress(*steps[4])
-        if is_company:
-            df = df[df["Company Name"].notna() & (df["Company Name"] != "N/A")].drop_duplicates(subset=["LinkedIn URL"], keep="first").reset_index(drop=True)
-        else:
-            df = clean_dataframe(df)
-        bar.progress(*steps[5])
-        if location_filter or query:
-            bar.progress(88, text="Filtering by relevance (Groq AI)...")
-            df = apply_groq_filter(df, query, location_filter)
-        df = apply_lead_scores(df)
-        bar.progress(*steps[6]); time.sleep(0.2)
+        collected = pd.DataFrame(columns=cols)
+        take_pages = apify_service.initial_take_pages(max_results_)
+        pages_fetched = 0
+        for attempt in range(MAX_FETCH_ATTEMPTS):
+            bar.progress(min(10 + attempt * 20, 60), text=f"Searching LinkedIn (batch {attempt + 1})...")
+            raw_items = apify_service.run_linkedin_search(
+                query=q, lead_type=lead_type_, filters=filters,
+                take_pages=take_pages, start_page=pages_fetched + 1,
+            )
+            pages_fetched += take_pages
+            if not raw_items:
+                break
+            batch = _normalize_batch(raw_items, normalizer, cols, q, is_company)
+            collected = _merge_unique(collected, batch)
+            collected = apply_location_filter(collected, location_filter)
+            collected = score_relevance(collected, q, filters)
+            relevant_count = len(filter_relevant(collected))
+            if relevant_count >= max_results_ or pages_fetched >= apify_service.MAX_PAGES:
+                break
+            take_pages = min(take_pages, apify_service.MAX_PAGES - pages_fetched)
+
+        if collected.empty:
+            raise apify_service.NoLeadsFoundError("No leads were found for this search query. Try broadening your search.")
+
+        bar.progress(80, text="Scoring & ranking leads...")
+        relevant = filter_relevant(collected)
+        collected = relevant if not relevant.empty else collected
+        collected = apply_lead_scores(collected)
+        collected = collected.sort_values([RELEVANCE_COL, "Lead Score"], ascending=False).reset_index(drop=True)
+
+        if len(collected) > max_results_:
+            collected = collected.head(max_results_).reset_index(drop=True)
+        elif len(collected) < max_results_:
+            st.session_state.shortfall_message = (
+                f"Found {len(collected)} of {max_results_} requested leads matching your criteria."
+            )
+
+        collected = collected.drop(columns=[RELEVANCE_COL, PRIMARY_RELEVANCE_COL])
+
+        bar.progress(97, text="Preparing Dashboard..."); time.sleep(0.2)
         bar.progress(100, text="Done"); time.sleep(0.3)
         bar.empty()
-        return df
+        return collected
     except Exception as exc:
         bar.empty()
         title = next((t for cls, t in _ERROR_MAP.items() if isinstance(exc, cls)), "Unexpected Error")
@@ -372,6 +417,8 @@ if generate_clicked:
 if st.session_state.error_message:
     title, detail = st.session_state.error_message
     st.error(f"**{title}** — {detail}")
+elif st.session_state.shortfall_message:
+    st.info(st.session_state.shortfall_message)
 
 st.radio(
     "View", ["🔷 LinkedIn Leads", "📍 Google Leads"],

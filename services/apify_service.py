@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+import time
 from typing import Any
 
 from apify_client import ApifyClient
@@ -9,6 +10,10 @@ from apify_client.errors import ApifyApiError
 
 DEFAULT_ACTOR_ID = "harvestapi/linkedin-profile-search"
 COMPANY_ACTOR_ID = "harvestapi/linkedin-company-search"
+
+PAGE_SIZE = 25
+OVERFETCH_MULTIPLIER = 3
+MAX_PAGES = 12  # 12 * PAGE_SIZE = 300 items, a generous ceiling on cost/time per search
 
 
 class ApifyServiceError(Exception): pass
@@ -34,7 +39,18 @@ def get_actor_id(lead_type: str = "People") -> str:
     return os.getenv("APIFY_ACTOR_ID", DEFAULT_ACTOR_ID).strip() or DEFAULT_ACTOR_ID
 
 
-# Maps filter dict keys → (run_input key, is_list)
+def initial_take_pages(max_results: int) -> int:
+    """Pages to request on the first attempt: enough headroom for downstream ranking/trimming
+    losses (dedup, location mismatch) without over-requesting on every search."""
+    wanted_pages = math.ceil(max_results / PAGE_SIZE) * OVERFETCH_MULTIPLIER
+    return min(max(wanted_pages, 1), MAX_PAGES)
+
+
+# Maps filter dict keys → run_input key. Only free-text list params verified against the
+# harvestapi actor schema are sent here. Enum-coded filters (industry, seniority, function,
+# years of experience/at company, company headcount, profile language) aren't reliably
+# expressible as free text against the actor's real (ID-based) schema, so they're applied as
+# post-fetch relevance signals instead (see services/relevance.py) rather than sent here.
 _LIST_FILTERS = {
     "location": "locations",
     "current_job_title": "currentJobTitles",
@@ -42,30 +58,23 @@ _LIST_FILTERS = {
     "current_company": "currentCompanies",
     "past_company": "pastCompanies",
     "school": "schools",
-    "industry": "industries",
     "keyword": "keywords",
     "first_name": "firstNames",
     "last_name": "lastNames",
     "company_hq_location": "companyHeadquarterLocations",
 }
-_SCALAR_FILTERS = {
-    "years_of_experience": "yearsOfExperience",
-    "years_at_current_company": "yearsAtCurrentCompany",
-}
-_WRAPPED_FILTERS = {
-    "seniority": "seniorities",
-    "function": "functions",
-    "company_headcount": "companyHeadcounts",
-    "profile_language": "profileLanguages",
-}
 
 
 def run_linkedin_search(
     query: str,
-    max_results: int = 100,
     lead_type: str = "People",
     filters: dict | None = None,
+    take_pages: int = 3,
+    start_page: int = 1,
 ) -> list[dict[str, Any]]:
+    """Fetches one page-range from Apify. Callers doing a multi-attempt backfill should advance
+    `start_page` by the number of pages already fetched, rather than re-requesting from page 1 —
+    the actor bills per page scraped, so re-fetching page 1 on every attempt would double-bill."""
     if not query or not query.strip():
         raise ApifyServiceError("Search query cannot be empty.")
 
@@ -76,35 +85,23 @@ def run_linkedin_search(
 
     def _str(key): return (filters.get(key) or "").strip()
 
+    run_input: dict[str, Any] = {
+        "searchQuery": query,
+        "startPage": start_page,
+        "takePages": take_pages,
+        "maxItems": take_pages * PAGE_SIZE,
+    }
     if lead_type == "Company":
-        run_input: dict[str, Any] = {
-            "searchQuery": query,
-            "maxItems": max_results,
-            "takePages": max(1, math.ceil(max_results / 25)),
-        }
-        for fk, rk in [("location", "locations"), ("industry", "industries"), ("keyword", "keywords")]:
+        for fk, rk in [("location", "locations"), ("keyword", "keywords")]:
             if v := _str(fk):
                 run_input[rk] = [v]
-        if v := _str("company_headcount"):
-            run_input["companyHeadcounts"] = [v]
     else:
-        run_input = {
-            "searchQuery": query,
-            "maxItems": max_results,
-            "takePages": max(1, math.ceil(max_results / 25)),
-        }
         for fk, rk in _LIST_FILTERS.items():
-            if v := _str(fk):
-                run_input[rk] = [v]
-        for fk, rk in _SCALAR_FILTERS.items():
-            if v := _str(fk):
-                run_input[rk] = v
-        for fk, rk in _WRAPPED_FILTERS.items():
             if v := _str(fk):
                 run_input[rk] = [v]
 
     try:
-        run = client.actor(actor_id).call(run_input=run_input)
+        run = _call_actor_with_retry(client, actor_id, run_input)
     except ApifyApiError as exc:
         raise _translate_api_error(exc) from exc
     except Exception as exc:
@@ -126,14 +123,24 @@ def run_linkedin_search(
         raise ActorRunFailedError(f"Actor run finished with status: {getattr(run, 'status', 'UNKNOWN')}")
 
     try:
-        items = list(client.dataset(dataset_id).iterate_items())
+        return list(client.dataset(dataset_id).iterate_items())
     except ApifyApiError as exc:
         raise _translate_api_error(exc) from exc
 
-    if not items:
-        raise NoLeadsFoundError("No leads were found for this search query. Try broadening your search.")
 
-    return items
+def _call_actor_with_retry(client: ApifyClient, actor_id: str, run_input: dict[str, Any], retries: int = 1):
+    last_exc: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            return client.actor(actor_id).call(run_input=run_input)
+        except ApifyApiError as exc:
+            translated = _translate_api_error(exc)
+            if attempt < retries and isinstance(translated, (RateLimitError, ApifyTimeoutError)):
+                last_exc = exc
+                time.sleep(2)
+                continue
+            raise
+    raise last_exc  # pragma: no cover - unreachable, satisfies type checkers
 
 
 def _translate_api_error(exc: ApifyApiError) -> ApifyServiceError:
