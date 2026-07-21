@@ -7,7 +7,7 @@ import pandas as pd
 
 RELEVANCE_COL = "_relevance"
 PRIMARY_RELEVANCE_COL = "_primary_relevance"
-MIN_RELEVANCE = 50  # below this, a lead's industry/description doesn't actually match the search
+MIN_RELEVANCE = 20  # below this, a lead's industry/description doesn't actually match the search
 
 
 def _norm(text) -> str:
